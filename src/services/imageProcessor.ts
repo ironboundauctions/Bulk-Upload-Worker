@@ -43,15 +43,6 @@ export class ImageProcessor {
     logger.debug('Processing image', { size: sourceBuffer.length });
 
     try {
-      const image = sharp(sourceBuffer);
-      const metadata = await image.metadata();
-
-      logger.debug('Image metadata', {
-        format: metadata.format,
-        width: metadata.width,
-        height: metadata.height,
-      });
-
       const [thumb, display] = await Promise.all([
         this.createThumbnail(sourceBuffer),
         this.createDisplay(sourceBuffer),
@@ -70,41 +61,23 @@ export class ImageProcessor {
   }
 
   private async createThumbnail(buffer: Buffer): Promise<ImageVariant> {
-    const image = sharp(buffer)
+    const { data, info } = await sharp(buffer)
       .rotate()
-      .resize(400, 400, {
-        fit: 'inside',
-        withoutEnlargement: true,
-      })
-      .webp({ quality: 80 });
+      .resize(400, 400, { fit: 'inside', withoutEnlargement: true })
+      .webp({ quality: 80 })
+      .toBuffer({ resolveWithObject: true });
 
-    const processedBuffer = await image.toBuffer();
-    const metadata = await sharp(processedBuffer).metadata();
-
-    return {
-      buffer: processedBuffer,
-      width: metadata.width || 0,
-      height: metadata.height || 0,
-    };
+    return { buffer: data, width: info.width, height: info.height };
   }
 
   private async createDisplay(buffer: Buffer): Promise<ImageVariant> {
-    const image = sharp(buffer)
+    const { data, info } = await sharp(buffer)
       .rotate()
-      .resize(1600, 1600, {
-        fit: 'inside',
-        withoutEnlargement: true,
-      })
-      .webp({ quality: 90 });
+      .resize(1600, 1600, { fit: 'inside', withoutEnlargement: true })
+      .webp({ quality: 90 })
+      .toBuffer({ resolveWithObject: true });
 
-    const processedBuffer = await image.toBuffer();
-    const metadata = await sharp(processedBuffer).metadata();
-
-    return {
-      buffer: processedBuffer,
-      width: metadata.width || 0,
-      height: metadata.height || 0,
-    };
+    return { buffer: data, width: info.width, height: info.height };
   }
 
   async processVideoThumbnail(videoBuffer: Buffer): Promise<ImageVariants> {

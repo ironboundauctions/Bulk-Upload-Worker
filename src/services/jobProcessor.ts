@@ -1,5 +1,5 @@
 import { DatabaseService } from './database.js';
-import { RaidService } from './raid.js';
+import { RaidService, PermanentJobError } from './raid.js';
 import { ImageProcessor } from './imageProcessor.js';
 import { StorageService } from './storage.js';
 import { logger } from '../logger.js';
@@ -19,29 +19,35 @@ export class JobProcessor {
       return false;
     }
 
-    logger.info('Processing job', { jobId: job.id, fileId: job.file_id });
-
     try {
       const file = await this.db.getFileById(job.file_id);
 
       if (!file) {
-        throw new Error(`File not found: ${job.file_id}`);
+        await this.db.markJobPermanentlyFailed(job.id, job.file_id, `File record not found: ${job.file_id}`);
+        return true;
       }
 
-      logger.debug('File details', {
-        fileId: file.id,
-        sourceKey: file.source_key,
-        originalName: file.original_name,
-        variant: file.variant,
-        mimeType: file.mime_type,
+      // Determine source type from source_key — RAID keys are file paths, B2/CDN keys are URLs
+      const sourceKey = file.source_key || '';
+      const sourceType = sourceKey.startsWith('http') ? 'direct_upload' : 'raid';
+
+      logger.info('Processing job', {
+        jobId: job.id,
+        fileId: job.file_id,
+        fileName: file.original_name,
+        assetGroupId: file.asset_group_id,
+        sourceType,
+        sourceKey: sourceKey.substring(0, 80),
+        retryCount: job.retry_count,
+        maxRetries: job.max_retries,
       });
 
       if (!file.source_key) {
-        throw new Error(`Source file missing source_key: ${file.id}`);
+        await this.db.markJobPermanentlyFailed(job.id, job.file_id, `Source key missing on file: ${file.id}`);
+        return true;
       }
 
       const sourceBuffer = await this.raid.downloadFile(file.source_key);
-
       const mimeType = file.mime_type || 'unknown';
 
       if (this.imageProcessor.isImage(mimeType)) {
@@ -49,20 +55,29 @@ export class JobProcessor {
       } else if (this.imageProcessor.isVideo(mimeType)) {
         await this.processVideo(job, file, sourceBuffer);
       } else {
-        throw new Error(`Unsupported MIME type: ${mimeType}`);
+        await this.db.markJobPermanentlyFailed(job.id, job.file_id, `Unsupported MIME type: ${mimeType}`);
+        return true;
       }
 
       logger.info('Job completed successfully', {
         jobId: job.id,
         fileId: job.file_id,
+        fileName: file.original_name,
+        sourceType,
       });
 
       return true;
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      logger.error('Job processing failed', { jobId: job.id, error: errorMessage });
+      const isPermanent = error instanceof PermanentJobError;
 
-      await this.db.markJobFailed(job.id, job.file_id, errorMessage);
+      if (isPermanent) {
+        logger.warn('Job permanently failed (no retry)', { jobId: job.id, fileId: job.file_id, error: errorMessage });
+        await this.db.markJobPermanentlyFailed(job.id, job.file_id, errorMessage);
+      } else {
+        logger.error('Job processing failed', { jobId: job.id, fileId: job.file_id, error: errorMessage });
+        await this.db.markJobFailed(job.id, job.file_id, errorMessage);
+      }
 
       return true;
     }
@@ -92,13 +107,7 @@ export class JobProcessor {
       b2Key: displayB2Key,
     });
 
-    await this.db.markJobCompleted(
-      job.id,
-      job.file_id,
-      '',
-      thumbUrl,
-      displayUrl
-    );
+    await this.db.markJobCompleted(job.id, job.file_id, '', thumbUrl, displayUrl);
 
     logger.info('Image processed successfully', {
       fileId: file.id,
@@ -146,13 +155,7 @@ export class JobProcessor {
         b2Key: displayB2Key,
       });
 
-      await this.db.markJobCompleted(
-        job.id,
-        job.file_id,
-        '',
-        thumbUrl,
-        displayUrl
-      );
+      await this.db.markJobCompleted(job.id, job.file_id, '', thumbUrl, displayUrl);
 
       logger.info('Video processed successfully with thumbnail', {
         fileId: file.id,
@@ -165,16 +168,9 @@ export class JobProcessor {
       logger.error('Video thumbnail generation failed, continuing without thumbnail', {
         fileId: file.id,
         error: thumbnailError instanceof Error ? thumbnailError.message : 'Unknown error',
-        stack: thumbnailError instanceof Error ? thumbnailError.stack : undefined,
       });
 
-      await this.db.markJobCompleted(
-        job.id,
-        job.file_id,
-        '',
-        '',
-        ''
-      );
+      await this.db.markJobCompleted(job.id, job.file_id, '', '', '');
 
       logger.info('Video processed successfully without thumbnail', {
         fileId: file.id,

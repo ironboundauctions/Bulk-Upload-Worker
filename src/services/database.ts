@@ -257,6 +257,34 @@ export class DatabaseService {
     );
   }
 
+  async markJobPermanentlyFailed(jobId: string, fileId: string, errorMessage: string): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `UPDATE publish_jobs
+         SET status = 'failed',
+             retry_count = max_retries,
+             error_message = $1,
+             completed_at = NOW(),
+             updated_at = NOW()
+         WHERE id = $2`,
+        [errorMessage, jobId]
+      );
+      await client.query(
+        `UPDATE auction_files SET published_status = 'failed' WHERE id = $1 AND variant = 'source'`,
+        [fileId]
+      );
+      await client.query('COMMIT');
+      logger.warn('Job permanently failed (no retry)', { jobId, fileId, error: errorMessage });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async markJobFailed(jobId: string, fileId: string, errorMessage: string): Promise<void> {
     const client = await this.pool.connect();
     try {
