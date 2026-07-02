@@ -46,27 +46,21 @@ class MediaPublishingWorker {
 
     while (!this.isShuttingDown) {
       try {
-        // Probe with one job first — avoids N concurrent DB queries on an idle queue
-        const firstResult = await this.processNextJob();
+        const promises: Promise<boolean>[] = [];
 
-        if (!firstResult) {
-          await this.sleep(config.worker.pollInterval);
-          continue;
+        for (let i = 0; i < config.worker.concurrency; i++) {
+          if (!this.isShuttingDown) {
+            promises.push(this.processNextJob());
+          }
         }
 
-        // Queue has work — saturate remaining concurrency slots
-        if (config.worker.concurrency > 1) {
-          const remaining: Promise<boolean>[] = [];
-          for (let i = 1; i < config.worker.concurrency; i++) {
-            if (!this.isShuttingDown) {
-              remaining.push(this.processNextJob());
-            }
-          }
-          const extraResults = await Promise.all(remaining);
-          const processedCount = 1 + extraResults.filter(Boolean).length;
-          logger.debug(`Processed ${processedCount} jobs`);
+        const results = await Promise.all(promises);
+        const processedCount = results.filter(Boolean).length;
+
+        if (processedCount === 0) {
+          await this.sleep(config.worker.pollInterval);
         } else {
-          logger.debug('Processed 1 job');
+          logger.debug(`Processed ${processedCount} jobs`);
         }
       } catch (error) {
         logger.error('Worker loop error', error as Error);
