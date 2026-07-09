@@ -218,6 +218,8 @@ class MediaPublishingWorker {
         logger.info('B2 and DB data fetched', { b2Files: allB2Files.length, dbKeys: dbFileKeys.length });
 
         const dbKeySet = new Set(dbFileKeys);
+        // Asset groups that exist in the DB (may have NULL b2_key for older records)
+        const dbAssetGroupSet = new Set(dbAssetGroups);
 
         // Derive asset group IDs from the already-fetched file list — no second list call
         const b2AssetGroupIds = new Set<string>();
@@ -234,7 +236,18 @@ class MediaPublishingWorker {
         const staleThreshold = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
         const orphanedFiles = allB2Files.filter(file => {
+          // Skip if this exact b2_key is in the DB
           if (dbKeySet.has(file.key)) return false;
+
+          // Skip if the file belongs to an asset_group that still exists in the DB.
+          // Older records may have b2_key=NULL so they won't appear in dbKeySet,
+          // but their asset_group_id is still in the DB — don't treat them as orphans.
+          const parts = file.key.split('/');
+          if (parts[0] === 'assets') {
+            const assetGroupId = parts.length >= 4 ? parts[2] : parts[1];
+            if (assetGroupId && dbAssetGroupSet.has(assetGroupId)) return false;
+          }
+
           return new Date(file.lastModified) < staleThreshold;
         });
         const estimatedWastedSpace = orphanedFiles.reduce((sum, file) => sum + file.size, 0);
