@@ -46,11 +46,16 @@ export class UploadHandler {
 
       if (isVideo) {
         // --- Video upload path ---
-        // 1. Store the original video file as the 'video' variant
-        const ext = req.file.originalname.split('.').pop()?.toLowerCase() || 'mp4';
-        const videoB2Key = `assets/${item_id}/${assetGroupId}/video.${ext}`;
+        // 1. Transcode to H.264/AAC MP4 (720p max, fast-start) then store
+        logger.info('Transcoding video before upload', {
+          originalName: req.file.originalname,
+          originalSize: req.file.size,
+          originalMime: req.file.mimetype,
+        });
+        const transcodedBuffer = await this.imageProcessor.transcodeVideo(req.file.buffer);
+        const videoB2Key = `assets/${item_id}/${assetGroupId}/video.mp4`;
         const videoCdnUrl = this.storage.getCdnUrl(videoB2Key);
-        await this.storage.uploadFile(videoB2Key, req.file.buffer, req.file.mimetype);
+        await this.storage.uploadFile(videoB2Key, transcodedBuffer, 'video/mp4');
 
         const videoVariantId = await this.db.upsertVariant(
           assetGroupId,
@@ -59,7 +64,7 @@ export class UploadHandler {
           { b2Key: videoB2Key, width: 0, height: 0, displayOrder: nextDisplayOrder, itemId: item_id }
         );
         createdFileIds.push(videoVariantId);
-        await this.db.setVariantItemAndMetadata(videoVariantId, item_id, req.file.originalname, req.file.buffer.length, req.file.mimetype);
+        await this.db.setVariantItemAndMetadata(videoVariantId, item_id, req.file.originalname, transcodedBuffer.length, 'video/mp4');
 
         uploadResults.push({
           variant: 'video',
@@ -70,9 +75,9 @@ export class UploadHandler {
           height: 0
         });
 
-        // 2. Generate thumbnail from first frame (best-effort — skip if ffmpeg unavailable)
+        // 2. Generate thumbnail from first frame of the transcoded video (best-effort)
         try {
-          const thumbnailVariants = await this.imageProcessor.processVideoThumbnail(req.file.buffer);
+          const thumbnailVariants = await this.imageProcessor.processVideoThumbnail(transcodedBuffer);
 
           for (const { name, data } of [
             { name: 'thumb', data: thumbnailVariants.thumb },

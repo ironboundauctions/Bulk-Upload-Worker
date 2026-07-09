@@ -119,12 +119,14 @@ export class JobProcessor {
 
   private async processVideo(job: any, file: any, sourceBuffer: Buffer): Promise<void> {
     const mimeType = file.mime_type || 'video/mp4';
-    logger.info('Processing video', { fileId: file.id, assetGroupId: file.asset_group_id, mimeType });
+    logger.info('Processing video — transcoding to H.264 MP4', { fileId: file.id, assetGroupId: file.asset_group_id, mimeType });
+
+    const transcodedBuffer = await this.imageProcessor.transcodeVideo(sourceBuffer);
 
     const { videoUrl, videoB2Key } = await this.storage.uploadVideo(
       file.asset_group_id,
-      sourceBuffer,
-      mimeType,
+      transcodedBuffer,
+      'video/mp4',
       file.item_id || undefined
     );
 
@@ -133,8 +135,8 @@ export class JobProcessor {
     });
 
     try {
-      logger.info('Generating thumbnail from video', { fileId: file.id });
-      const variants = await this.imageProcessor.processVideoThumbnail(sourceBuffer);
+      logger.info('Generating thumbnail from transcoded video', { fileId: file.id });
+      const variants = await this.imageProcessor.processVideoThumbnail(transcodedBuffer);
 
       const { thumbUrl, thumbB2Key, displayUrl, displayB2Key } = await this.storage.uploadVariants(
         file.asset_group_id,

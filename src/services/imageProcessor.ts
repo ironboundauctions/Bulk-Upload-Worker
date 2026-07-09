@@ -80,6 +80,60 @@ export class ImageProcessor {
     return { buffer: data, width: info.width, height: info.height };
   }
 
+  async transcodeVideo(inputBuffer: Buffer): Promise<Buffer> {
+    logger.debug('Transcoding video', { inputSize: inputBuffer.length });
+
+    const tempDir = tmpdir();
+    const uniqueId = crypto.randomUUID();
+    const inputPath = join(tempDir, `input-${uniqueId}.mp4`);
+    const outputPath = join(tempDir, `output-${uniqueId}.mp4`);
+
+    try {
+      await fs.writeFile(inputPath, inputBuffer);
+
+      await new Promise<void>((resolve, reject) => {
+        ffmpeg(inputPath)
+          .videoCodec('libx264')
+          .addOption('-preset', 'fast')
+          .addOption('-crf', '23')
+          // Scale down to max 1280x720, preserve aspect ratio, force even dimensions for h264
+          .addOption('-vf', 'scale=w=min(1280\\,iw):h=min(720\\,ih):force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2')
+          // Map audio optionally — handles videos with no audio track without erroring
+          .addOption('-map', '0:v:0')
+          .addOption('-map', '0:a:0?')
+          .audioCodec('aac')
+          .audioBitrate('96k')
+          // Fast-start so browsers begin playback before full download
+          .addOption('-movflags', '+faststart')
+          .format('mp4')
+          .output(outputPath)
+          .on('start', (cmd: string) => logger.debug('FFmpeg transcode started', { cmd: cmd.substring(0, 200) }))
+          .on('end', () => resolve())
+          .on('error', (err: any, _stdout: any, stderr: any) => {
+            logger.error('FFmpeg transcode error', {
+              error: err?.message || String(err),
+              stderr: stderr ? String(stderr).substring(0, 500) : '',
+            });
+            reject(err);
+          })
+          .run();
+      });
+
+      const outputBuffer = await fs.readFile(outputPath);
+
+      logger.info('Video transcoded successfully', {
+        inputSize: inputBuffer.length,
+        outputSize: outputBuffer.length,
+        reductionPct: Math.round((1 - outputBuffer.length / inputBuffer.length) * 100),
+      });
+
+      return outputBuffer;
+    } finally {
+      await fs.unlink(inputPath).catch(() => {});
+      await fs.unlink(outputPath).catch(() => {});
+    }
+  }
+
   async processVideoThumbnail(videoBuffer: Buffer): Promise<ImageVariants> {
     logger.debug('Generating video thumbnail', { size: videoBuffer.length });
 
