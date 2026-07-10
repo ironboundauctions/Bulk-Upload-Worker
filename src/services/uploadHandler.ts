@@ -3,10 +3,13 @@ import { ImageProcessor } from './imageProcessor.js';
 import { StorageService } from './storage.js';
 import { DatabaseService } from './database.js';
 import { RaidService } from './raid.js';
+import { BarcodeScanner } from './barcodeScanner.js';
 import { logger } from '../logger.js';
 import crypto from 'crypto';
 
 export class UploadHandler {
+  private barcodeScanner = new BarcodeScanner();
+
   constructor(
     private db: DatabaseService,
     private imageProcessor: ImageProcessor,
@@ -450,6 +453,10 @@ export class UploadHandler {
 
             try {
               const buffer = await this.raid.downloadFile(sourceKey);
+
+              // Scan for barcode while we have the raw buffer in memory
+              const barcodeResult = await this.barcodeScanner.scanBuffer(buffer, fileName, assetGroupId);
+
               const variants = await this.imageProcessor.processImage(buffer);
 
               const sourceB2Key = `assets/${assetGroupId}/source.webp`;
@@ -472,6 +479,7 @@ export class UploadHandler {
                 fileSize: buffer.length,
                 mimeType: 'image/webp',
                 assetGroupId,
+                barcodeValue: barcodeResult.barcodeValue,
                 cdnUrls: {
                   source: sourceCdnUrl,
                   display: displayCdnUrl,
